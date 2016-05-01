@@ -29,6 +29,9 @@
 module Pipes.Internal (
     -- * Internal
       Proxy(..)
+    , fixl
+    , fixr
+    , fixm
     , unsafeHoist
     , observe
     , X
@@ -68,22 +71,56 @@ data Proxy a' a b' b m r
     | M          (m    (Proxy a' a b' b m r))
     | Pure    r
 
+{-| Transform a 'Proxy', fixing the 'M' and 'Pure' parts. -}
+fixm
+    :: (Proxy a' a b' b m r -> Proxy a' a b' b m1 r1)
+    ->  Proxy a' a b' b m r -> Proxy a' a b' b m1 r1
+fixm go p = case p of
+    Request a' fa  -> Request a' (\a  -> go (fa  a ))
+    Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
+    M          _   -> go p  -- 'go' should make this unreachable
+    Pure       _   -> go p  -- 'go' should make this unreachable
+{-# INLINABLE fixm #-}
+
+{-| Transform a 'Proxy', fixing the 'Respond' part. -}
+fixr
+    :: Monad m
+    => (Proxy a' a b' b m r -> Proxy a' a b1' b1 m r)
+    ->  Proxy a' a b' b m r -> Proxy a' a b1' b1 m r
+fixr go p = case p of
+    Request a' fa  -> Request a' (\a  -> go (fa  a ))
+    Respond _  _   -> go p  -- 'go' should make this unreachable
+    M          m   -> M (m >>= \p' -> return (go p'))
+    Pure       r   -> Pure r
+{-# INLINABLE fixr #-}
+
+{-| Transform a 'Proxy', fixing the 'Request' part. -}
+fixl
+    :: Monad m
+    => (Proxy a' a b' b m r -> Proxy a1' a1 b' b m r)
+    ->  Proxy a' a b' b m r -> Proxy a1' a1 b' b m r
+fixl go p = case p of
+    Request _  _   -> go p  -- 'go' should make this unreachable
+    Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
+    M          m   -> M (m >>= \p' -> return (go p'))
+    Pure       r   -> Pure r
+{-# INLINABLE fixl #-}
+
+
 instance Monad m => Functor (Proxy a' a b' b m) where
     fmap f p0 = go p0 where
         go p = case p of
-            Request a' fa  -> Request a' (\a  -> go (fa  a ))
-            Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
             M          m   -> M (m >>= \p' -> return (go p'))
             Pure    r      -> Pure (f r)
+            _              -> fixm go p
 
 instance Monad m => Applicative (Proxy a' a b' b m) where
     pure      = Pure
     pf <*> px = go pf where
         go p = case p of
-            Request a' fa  -> Request a' (\a  -> go (fa  a ))
-            Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
             M          m   -> M (m >>= \p' -> return (go p'))
             Pure    f      -> fmap f px
+            _              -> fixm go p
     m *> k = m >>= (\_ -> k)
 
 instance Monad m => Monad (Proxy a' a b' b m) where
@@ -97,10 +134,9 @@ _bind
     -> Proxy a' a b' b m r'
 p0 `_bind` f = go p0 where
     go p = case p of
-        Request a' fa  -> Request a' (\a  -> go (fa  a ))
-        Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
         M          m   -> M (m >>= \p' -> return (go p'))
         Pure    r      -> f r
+        _              -> fixm go p
 
 {-# RULES
     "_bind (Request a' k) f" forall a' k f .
@@ -117,10 +153,9 @@ instance (Monad m, Monoid r) => Monoid (Proxy a' a b' b m r) where
     mempty        = Pure mempty
     mappend p1 p2 = go p1 where
         go p = case p of
-            Request a' fa  -> Request a' (\a  -> go (fa  a ))
-            Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
             M          m   -> M (m >>= \p' -> return (go p'))
             Pure    r1     -> fmap (mappend r1) p2
+            _              -> fixm go p
 
 instance MonadTrans (Proxy a' a b' b) where
     lift m = M (m >>= \r -> return (Pure r))
@@ -137,29 +172,26 @@ unsafeHoist
 unsafeHoist nat = go
   where
     go p = case p of
-        Request a' fa  -> Request a' (\a  -> go (fa  a ))
-        Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
         M          m   -> M (nat (m >>= \p' -> return (go p')))
         Pure    r      -> Pure r
+        _              -> fixm go p
 {-# INLINABLE unsafeHoist #-}
 
 instance MFunctor (Proxy a' a b' b) where
     hoist nat p0 = go (observe p0)
       where
         go p = case p of
-            Request a' fa  -> Request a' (\a  -> go (fa  a ))
-            Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
             M          m   -> M (nat (m >>= \p' -> return (go p')))
             Pure    r      -> Pure r
+            _              -> fixm go p
 
 instance MMonad (Proxy a' a b' b) where
     embed f = go
       where
         go p = case p of
-            Request a' fa  -> Request a' (\a  -> go (fa  a ))
-            Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
             M          m   -> f m >>= go
             Pure    r      -> Pure r
+            _              -> fixm go p
 
 instance MonadIO m => MonadIO (Proxy a' a b' b m) where
     liftIO m = M (liftIO (m >>= \r -> return (Pure r)))
@@ -169,10 +201,9 @@ instance MonadReader r m => MonadReader r (Proxy a' a b' b m) where
     local f = go
         where
           go p = case p of
-              Request a' fa  -> Request a' (\a  -> go (fa  a ))
-              Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
               Pure    r      -> Pure r
               M       m      -> M (local f m >>= \r -> return (go r))
+              _              -> fixm go p
     reader = lift . reader
 
 instance MonadState s m => MonadState s (Proxy a' a b' b m) where
@@ -186,34 +217,31 @@ instance MonadWriter w m => MonadWriter w (Proxy a' a b' b m) where
     listen p0 = go p0 mempty
       where
         go p w = case p of
-            Request a' fa  -> Request a' (\a  -> go (fa  a ) w)
-            Respond b  fb' -> Respond b  (\b' -> go (fb' b') w)
             M       m      -> M (do
                 (p', w') <- listen m
                 return (go p' $! mappend w w') )
             Pure    r      -> Pure (r, w)
+            _              -> fixm (`go` w) p
 
     pass p0 = go p0 mempty
       where
         go p w = case p of
-            Request a' fa  -> Request a' (\a  -> go (fa  a ) w)
-            Respond b  fb' -> Respond b  (\b' -> go (fb' b') w)
             M       m      -> M (do
                 (p', w') <- listen m
                 return (go p' $! mappend w w') )
             Pure   (r, f)  -> M (pass (return (Pure r, \_ -> f w)))
+            _              -> fixm (`go` w) p
 
 instance MonadError e m => MonadError e (Proxy a' a b' b m) where
     throwError = lift . throwError
     catchError p0 f = go p0
       where
         go p = case p of
-            Request a' fa  -> Request a' (\a  -> go (fa  a ))
-            Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
             Pure    r      -> Pure r
             M          m   -> M ((do
                 p' <- m
                 return (go p') ) `catchError` (\e -> return (f e)) )
+            _              -> fixm go p
 
 instance MonadPlus m => Alternative (Proxy a' a b' b m) where
     empty = mzero
@@ -224,12 +252,11 @@ instance MonadPlus m => MonadPlus (Proxy a' a b' b m) where
     mplus p0 p1 = go p0
       where
         go p = case p of
-            Request a' fa  -> Request a' (\a  -> go (fa  a ))
-            Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
             Pure    r      -> Pure r
             M          m   -> M ((do
                 p' <- m
                 return (go p') ) `mplus` return p1 )
+            _              -> fixm go p
 
 {-| The monad transformer laws are correct when viewed through the 'observe'
     function:

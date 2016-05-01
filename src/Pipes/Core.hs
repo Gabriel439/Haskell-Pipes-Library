@@ -82,7 +82,7 @@ module Pipes.Core (
     , closed
     ) where
 
-import Pipes.Internal (Proxy(..), X, closed)
+import Pipes.Internal (Proxy(..), X, closed, fixl, fixr)
 
 {- $proxy
     Diagrammatically, you can think of a 'Proxy' as having the following shape:
@@ -316,10 +316,8 @@ respond a = Respond a Pure
 p0 //> fb = go p0
   where
     go p = case p of
-        Request x' fx  -> Request x' (\x -> go (fx x))
         Respond b  fb' -> fb b >>= \b' -> go (fb' b')
-        M          m   -> M (m >>= \p' -> return (go p'))
-        Pure       a   -> Pure a
+        _              -> fixr go p
 {-# INLINABLE (//>) #-}
 
 {-# RULES
@@ -449,9 +447,7 @@ fb' >\\ p0 = go p0
   where
     go p = case p of
         Request b' fb  -> fb' b' >>= \b -> go (fb b)
-        Respond x  fx' -> Respond x (\x' -> go (fx' x'))
-        M          m   -> M (m >>= \p' -> return (go p'))
-        Pure       a   -> Pure a
+        _              -> fixl go p
 {-# INLINABLE (>\\) #-}
 
 {-# RULES
@@ -567,10 +563,8 @@ push = go
     ->       Proxy a' a c' c m r
     -- ^
 p >>~ fb = case p of
-    Request a' fa  -> Request a' (\a -> fa a >>~ fb)
     Respond b  fb' -> fb' +>> fb b
-    M          m   -> M (m >>= \p' -> return (p' >>~ fb))
-    Pure       r   -> Pure r
+    _              -> fixr (>>~ fb) p
 {-# INLINABLE (>>~) #-}
 
 {- $pull
@@ -678,9 +672,7 @@ pull = go
     -- ^
 fb' +>> p = case p of
     Request b' fb  -> fb' b' >>~ fb
-    Respond c  fc' -> Respond c (\c' -> fb' +>> fc' c')
-    M          m   -> M (m >>= \p' -> return (fb' +>> p'))
-    Pure       r   -> Pure r
+    _              -> fixl (fb' +>>) p
 {-# INLINABLE (+>>) #-}
 
 {- $reflect

@@ -54,7 +54,7 @@ import qualified Control.Monad.Trans.State.Strict as S
 import qualified Control.Monad.Trans.Writer.Strict as W
 import qualified Control.Monad.Trans.RWS.Strict as RWS
 import Data.Monoid (Monoid)
-import Pipes.Internal (Proxy(..), unsafeHoist)
+import Pipes.Internal (Proxy(..), fixm, unsafeHoist)
 import Control.Monad.Morph (hoist, MFunctor(..))
 import Pipes.Core (runEffect, request, respond, (//>), (>\\))
 
@@ -120,12 +120,11 @@ liftCatchError
 liftCatchError c p0 f = go p0
   where
     go p = case p of
-        Request a' fa  -> Request a' (\a  -> go (fa  a ))
-        Respond b  fb' -> Respond b  (\b' -> go (fb' b'))
         Pure    r      -> Pure r
         M          m   -> M ((do
             p' <- m
             return (go p') ) `c` (\e -> return (f e)) )
+        _              -> fixm go p
 {-# INLINABLE liftCatchError #-}
 
 -- | Wrap the base monad in 'M.MaybeT'
