@@ -53,6 +53,7 @@ module Pipes (
     , each
     , every
     , discard
+    , runPartial
 
     -- * Re-exports
     -- $reexports
@@ -656,6 +657,16 @@ every it = discard >\\ enumerate (toListT it)
 discard :: Monad m => a -> m ()
 discard _ = return ()
 {-# INLINABLE discard #-}
+
+-- | Run monadic actions and extract a return value if possible
+runPartial :: Monad m => Proxy a' a b' b m r -> m (Either r (Proxy a' a b' b m r))
+runPartial = go
+  where
+    go p = case p of
+      M m    -> m >>= go
+      Pure r -> return (Left r)
+      _      -> return (Right p)
+{-# INLINABLE runPartial #-}
 
 -- | ('>->') with the arguments flipped
 (<-<)
