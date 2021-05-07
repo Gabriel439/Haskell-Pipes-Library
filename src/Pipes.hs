@@ -46,6 +46,7 @@ module Pipes (
     -- * ListT
     , ListT(..)
     , runListT
+    , evalListT
     , Enumerable(..)
 
     -- * Utilities
@@ -78,7 +79,9 @@ import Control.Monad.Writer (MonadWriter(..))
 import Control.Monad.Zip (MonadZip(..))
 import Pipes.Core
 import Pipes.Internal (Proxy(..))
+import Pipes.Lift (writerP, execWriterP)
 import qualified Data.Foldable as F
+import qualified Control.Monad as M
 
 #if MIN_VERSION_base(4,8,0)
 import Control.Applicative (Alternative(..))
@@ -612,6 +615,14 @@ instance Monad m => MonadZip (ListT m) where
 runListT :: Monad m => ListT m a -> m ()
 runListT l = runEffect (enumerate (l >> mzero))
 {-# INLINABLE runListT #-}
+
+-- | Run a self-contained `ListT` computation and accumulate the produced values as a list in the underlying monad
+evalListT :: Monad m => ListT m a -> m [a]
+evalListT listT =
+      runEffect
+  $   execWriterP
+  $   (writerP $ (\() -> ((), [])) <$> enumerate listT)
+  >-> (M.forever $ pass ((\element -> ((), (element :))) <$> await))
 
 {-| 'Enumerable' generalizes 'Data.Foldable.Foldable', converting effectful
     containers to 'ListT's.
