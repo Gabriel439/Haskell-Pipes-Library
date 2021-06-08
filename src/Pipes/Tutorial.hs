@@ -22,17 +22,25 @@
     transform, and write loop in 'IO', which is streaming and effectful, but is
     not modular or separable.
 
+    At this point, you may be wondering why we can't define a streaming list type as follows:
+@
+newtype Stream m a = Stream (m (Maybe (a, Stream m a)))
+@
+    I am wondering this.
+
     @pipes@ gives you all three features: effectful, streaming, and composable
     programming.  @pipes@ also provides a wide variety of stream programming
     abstractions which are all subsets of a single unified machinery:
 
     * effectful 'Producer's (like generators),
 
-    * effectful 'Consumer's (like iteratees),
+    * effectful 'Consumer's (like iteratees), [maybe we should say what an iteratee is? or is not necessary for this tutorial?]
 
     * effectful 'Pipe's (like Unix pipes), and:
 
     * 'ListT' done right.
+
+    Don't worry if you don't know what generators, iteratees, or ListT are; these are not prerequisites of this tutorial.
 
     All of these are connectable and you can combine them together in clever and
     unexpected ways because they all share the same underlying type.
@@ -41,7 +49,7 @@
     learn about by reading either:
 
     * the paper \"Monad Transformers - Step by Step\",
-    
+
     * part III \"Monads in the Real World\" of the tutorial \"All About Monads\",
 
     * chapter 18 of \"Real World Haskell\" on monad transformers, or:
@@ -50,6 +58,7 @@
 
     If you want a Quick Start guide to @pipes@, read the documentation in
     "Pipes.Prelude" from top to bottom.
+    (What, really, is the difference between a Tutorial and a Quick Start guide? Maybe we should be more clear as to which kind of person should read this vs. Pipes.Prelude.)
 
     This tutorial is more extensive and explains the @pipes@ API in greater
     detail and illustrates several idioms.
@@ -99,11 +108,13 @@ import Prelude hiding ((.), id)
 {- $introduction
     The @pipes@ library decouples stream processing stages from each other so
     that you can mix and match diverse stages to produce useful streaming
-    programs.  If you are a library writer, @pipes@ lets you package up
+    programs. [this sentence is a bit wordy---are "diverse" and "useful" necessary here?] If you are a library writer, @pipes@ lets you package up
     streaming components into a reusable interface.  If you are an application
     writer, @pipes@ lets you connect pre-made streaming components with minimal
     effort to produce a highly-efficient program that streams data in constant
-    memory.
+    space.
+
+    What is a stream processing stage? A stream processing stage is a step in the pipeline that either sends data downstream, reads data from upstream, or perform effects in the base monad.
 
     To enforce loose coupling, components can only communicate using two
     commands:
@@ -111,6 +122,8 @@ import Prelude hiding ((.), id)
     * 'yield': Send output data
 
     * 'await': Receive input data
+
+    Components can also return a value, causing the streaming to terminate immediately and (what really happens to the streamed values that are ignored? what really happens to the return value? when you connect two components, which both return things, do you get both return values?) [When I heard this was a streaming library, I thought it was a type of effectful list, like the `Stream` type I mentioned above. Why are return values necessary?]
 
     @pipes@ has four types of components built around these two commands:
 
@@ -121,11 +134,9 @@ import Prelude hiding ((.), id)
     * 'Pipe's can both 'yield' and 'await' values and they model stream
       transformations
 
-    * 'Effect's can neither 'yield' nor 'await' and they model non-streaming
-      components
+    * 'Effect's can neither 'yield' nor 'await'---so they're basically equivalent to an action in the base monad
 
-    You can connect these components together in four separate ways which
-    parallel the four above types:
+    In this tutorial, we will explain how you can connect these components together. We will cover four separate ways in which you can connect these components, each of which parallel the four above types:
 
     * 'for' handles 'yield's
 
@@ -135,17 +146,34 @@ import Prelude hiding ((.), id)
 
     * ('>>=') handles return values
 
-    As you connect components their types will change to reflect inputs and
-    outputs that you've fused away.  You know that you're done connecting things
-    when you get an 'Effect', meaning that you have handled all inputs and
-    outputs.  You run this final 'Effect' to begin streaming.
+    (At this point, it's not clear why you would want more than one way to
+    connect components.  The fourth point seems strange because we haven't
+    explained why return values are a part of this type. At this point of the
+    tutorial, I'm thinking only of one type of composition: plugging in the
+    output of one stream into the input of another stream. I'm wondering why
+    there are three types of composition instead of one. Also, I'm not sure
+    what "handles" means in this context.)
+
+    As you connect components, their types will change to reflect inputs and
+    outputs that you've fused away. For example, if you compose a producer with
+    a consumer, you now have a unit that knows how to create values (by the
+    producer) and how to use the values from the producer, without yielding any
+    values downstream (by our Consumer), so you basically have an
+    'Effect'--something that doesn't take values from upstream or deposit
+    values downstream. Since you have an 'Effect', which is basically
+    equivalent to a value in the base monad, you can run this effect using
+    'runEffect'.
 -}
 
 {- $producers
-    'Producer's are effectful streams of input.  Specifically, a 'Producer' is a
-    monad transformer that extends any base monad with a new 'yield' command.
-    This 'yield' command lets you send output downstream to an anonymous
+    'Producer's are effectful streams of input.  Specifically, a 'Producer a m r' is a
+    monad transformer that extends any base monad 'm' with a new 'yield :: a -> Producer a m r' command.
+    This 'yield' command lets you send output of type 'a' downstream to an anonymous
     handler, decoupling how you generate values from how you consume them.
+
+    At this point, you may be wondering, in a 'Producer a m r', about the
+    purpose of the `r` type. After all, a `Producer` is an "effectful
+    stream of input" of type 'a'. (I'm not sure the answer to this question.)
 
     The following @stdinLn@ 'Producer' shows how to incrementally read in
     'String's from standard input and 'yield' them downstream, terminating
@@ -175,7 +203,18 @@ import Prelude hiding ((.), id)
 
     'yield' emits a value, suspending the current 'Producer' until the value is
     consumed.  If nobody consumes the value (which is possible) then 'yield'
-    never returns.  You can think of 'yield' as having the following type:
+    never returns.
+
+    Maybe insert a note here about how any component that terminates the
+    streaming returns a value of type 'r', so in any case the Producer either
+    finishes its streaming and returns the value of type 'r', or somebody
+    downstream terminates early, returning a value of type 'r', and this
+    becomes the return value of the Producer. (What I wrote here is misusing
+    terminology---a Producer doesn't really return anything, since you need to
+    make an Effect to actually run it. Maybe I should rewrite these sentences
+    referring to the return value of the Effect, instead of the Producer.)
+
+    You can think of 'yield' as having the following type:
 
 @
  'yield' :: 'Monad' m => a -> 'Producer' a m ()
@@ -536,15 +575,62 @@ import Prelude hiding ((.), id)
     'Either' returns a 'Left' if the 'Producer' is done or it returns a 'Right'
     containing the next value, @a@, along with the remainder of the 'Producer'.
 
+    Here is an example of using 'next':
+> sumEvenNums :: Int -> Producer Int IO () -> Effect IO Int
+> sumEvenNums runningSum producer = do
+>   intOrDone <- next producer
+>   case intOrDone of
+>     Left () ->
+>       liftIO (putStrLn ("Got to the end of the stream! The sum of the even numbers was " ++ show runningSum ++ "!"))
+>     Right (i, _) | i < 0 ->
+>       liftIO (putStrLn ("Quit early (throwing away the rest of the stream) because I found a negative number! The sum of the even numbers was " ++ show runningSum ++ "!"))
+>     Right (i, rest) ->
+>       let runningSum' = runningSum + (if even i then i else 0)
+>       sumEvenNums runningSum' rest
+
+    Note that in this example, we
+
+    * didn't process every value of the producer in the same way (not sure
+      if this is really true -- all we used was 'if', which can also be used
+      in 'for'. Can we change this example in a way that this actually happens?)
+    * didn't consume every element of the stream---we looked at the value in the
+      stream to decide if we wanted to continue processing the stream.
+
+    Neither of these can be achieved with 'for'.
+
     However, sometimes we can get away with something a little more simple and
     elegant, like a 'Consumer', which represents an effectful sink of values.  A
     'Consumer' is a monad transformer that extends the base monad with a new
     'await' command. This 'await' command lets you receive input from an
     anonymous upstream source.
 
-    The following @stdoutLn@ 'Consumer' shows how to incrementally 'await'
-    'String's and print them to standard output, terminating gracefully when
-    receiving a broken pipe error:
+    Let's do the same thing with a 'Consumer':
+
+> sumEvenNums' runningSum = do
+>   i <- await
+>   if i < 0 then
+>     return $ "Quit early (throwing away the rest of the stream) because "
+>              ++ "I found a negative number! The sum of the even numbers was "
+>              ++ show runningSum ++ "!"
+>   else
+>     sumEvenNums' (runningSum + (if even i then i else 0))
+>
+> sumEvenNums producer = do
+>   let producer = "Finished streaming, but didn't give sumEvenNums' a chance to finish up the output" <$ producer
+>   result <- runEffect $ producer' >-> sumEvenNums' 0
+>   putStrLn result
+
+[Okay, now I realize that this was a bad example. This is essentially a fold,
+and we can't really implement folds because the consumer never gets notified
+when upstream terminates the pipe. We should come up with an example of
+something that hits the sweet spot of where a Consumer is useful---something
+that can be done with a Consumer (i.e. doesn't require the full power of
+'next') that cannot be done with 'for'. After giving this example, we should
+write what exactly _can_ be done with a Consumer.]
+
+>   The following @stdoutLn@ 'Consumer' shows how to incrementally 'await'
+>   'String's and print them to standard output, terminating gracefully when
+>   receiving a broken pipe error:
 
 > import Control.Monad (unless)
 > import Control.Exception (try, throwIO)
@@ -560,8 +646,9 @@ import Prelude hiding ((.), id)
 >     x   <- lift $ try $ putStrLn str
 >     case x of
 >         -- Gracefully terminate if we got a broken pipe error
->         Left e@(G.IOError { G.ioe_type = t}) ->
->             lift $ unless (t == G.ResourceVanished) $ throwIO e
+>         -- (A broken pipe error is when putStrLn fails.)
+>         Left e@(G.IOError { G.ioe_type = t}) | t == G.ResourceVanished ->
+>             lift $ throwIO e
 >         -- Otherwise loop
 >         Right () -> stdoutLn
 
@@ -583,6 +670,18 @@ import Prelude hiding ((.), id)
  \-\-                 ----------    --------------    ----------
  ('>~') :: 'Monad' m => 'Effect' m b -> 'Consumer' b m c -> 'Effect' m c
 @
+
+    At this point, I am very confused because I finally got to see the full
+    type @Consumer b m c@, and I have no idea what the @c@ is. Consumers can't
+    yield, so @c@ can't be the type that is yielded. I don't have any other
+    guesses right now.
+
+    Okay, I thought about it a bit more and I realize that @c@ is the return
+    type of a Consumer. So a @Consumer b m c@ can @await@ values of type @b@
+    from upstream, invoke side-effects in @m@, and return values of type @c@.
+    "Running" a consumer amounts to giving it a source of input (either a
+    producer or using @>~@), which will give us a resulting Effect which we can
+    run with @runEffect@.
 
     @(draw >~ consumer)@ loops over @(consumer)@, substituting each 'await' in
     @(consumer)@ with @(draw)@.
@@ -609,8 +708,14 @@ ABC
 
     ('>~') is the dual of ('~>'), composing 'Consumer's instead of 'Producer's.
 
-    This means that you can feed a 'Consumer' with yet another 'Consumer' so
-    that you can 'await' while you 'await'.  For example, we could define the
+    This means that you can feed a 'Consumer' with yet another 'Consumer'. For
+    example, if we did @consumerA >~ consumerB@, the combined 'Consumer' waits
+    for input of type 'a', feeds these values into @consumerA@ until
+      @consumerA@ returns, and then feeds this returned @b@ value into
+      @consumerB@. It then continues feeding into @consumerA@ until it gets a
+      second @b@ value, which it feeds into @consumerB@, and so on.
+
+    For example, we could define the
     following intermediate 'Consumer' that requests two 'String's and returns
     them concatenated:
 
@@ -666,17 +771,28 @@ ABCDEF
 {- $pipes
     Our previous programs were unsatisfactory because they were biased either
     towards the 'Producer' end or the 'Consumer' end.  As a result, we had to
-    choose between gracefully handling end of input (using 'P.stdinLn') or
-    gracefully handling end of output (using 'P.stdoutLn'), but not both at the
-    same time.
+    choose between gracefully handling end of input (since @Producers@ like
+    'P.stdinLn' automatically terminate the whole pipeline when the Producer
+    stops yielding and simply returns) or gracefully handling end of output
+    (since @Consumers@ like 'P.stdoutLn' automatically terminate the whole
+    pipeline when the Consumer stops awaiting and simply returns), but not both
+    at the same time.
 
-    However, we don't need to restrict ourselves to using 'Producer's
-    exclusively or 'Consumer's exclusively.  We can connect 'Producer's and
-    'Consumer's directly together using ('>->') (pronounced \"pipe\"):
+    Currently, we have the ability to
+
+    * handle every element of that a Producer yields with a single handler (using @for@)
+    * feed a single value repeatedly into a Consumer (using @>~@).
+
+    However, we don't know yet how to connect 'Producer's to 'Consumer's. We
+    can connect 'Producer's and 'Consumer's directly together using ('>->')
+    (pronounced \"pipe\"):
 
 @
  ('>->') :: 'Monad' m => 'Producer' a m r -> 'Consumer' a m r -> 'Effect' m r
 @
+    When we run this 'Effect', the pipeline can be terminated in both ways:
+    when the producer-side stops yielding values, or when the consumer-side
+    stops awaiting values.
 
     This returns an 'Effect' which we can run:
 
@@ -687,7 +803,7 @@ ABCDEF
 >
 > main = runEffect $ P.stdinLn >-> P.stdoutLn
 
-    This program is more declarative of our intent: we want to stream values
+    This program is more declarative of our intent (more declarative than what?): we want to stream values
     from 'P.stdinLn' to 'P.stdoutLn'.  The above \"pipeline\" not only echoes
     standard input to standard output, but also handles both end of input and
     broken pipe errors:
@@ -769,7 +885,7 @@ ABCDEF
 >     replicateM_ n $ do                     -- Repeat this block 'n' times
 >         x <- await                         -- 'await' a value of type 'a'
 >         yield x                            -- 'yield' a value of type 'a'
->     lift $ putStrLn "You shall not pass!"  -- Fly, you fools!
+>     lift $ putStrLn "You shall not pass!"  -- Run this IO action, which returns ()
 
     You can use 'Pipe's to transform 'Producer's, 'Consumer's, or even other
     'Pipe's using the same ('>->') operator:
@@ -814,6 +930,14 @@ You shall not pass!
 >>> runEffect $ P.stdinLn >-> take 3 >-> P.stdoutLn
 <Exact same behavior>
 
+    Note that in this example, the pipeline is terminated by whichever
+    component finishes first: if we successfully receive 3 inputs from
+    @P.stdinLn@ and deposit 3 outputs from @P.stdoutLn@, then @take 3@
+    terminates the pipeline; if before that happens, @P.stdinLn@ stops
+    yielding, then @P.stdinLn@ terminates the pipeline; if before those two
+    events happen, the stdout-pipe breaks and @P.stdoutLn@ stops awaiting, then
+    @P.stdoutLn@ terminates the pipeline.
+
     ('>->') is designed to behave like the Unix pipe operator, except with less
     quirks.  In fact, we can continue the analogy to Unix by defining 'cat'
     (named after the Unix @cat@ utility), which reforwards elements endlessly:
@@ -832,8 +956,10 @@ You shall not pass!
 > -- Forwarding output to 'cat' does nothing
 > p >-> cat = p
 
-    Therefore, ('>->') and 'cat' form a 'Category', specifically the category of
-    Unix pipes, and 'Pipe's are also composable.
+    Therefore, ('>->') and 'cat' form a 'Category', specifically the category
+    of Unix pipes (does it really make sense to call it the category of Unix
+    pipes here? I like the analogy, but after all, these are pipes-library
+    @Pipe@s, not Unix pipes), and 'Pipe's are also composable.
 
     A lot of Unix tools have very simple definitions when written using @pipes@:
 
@@ -848,7 +974,15 @@ You shall not pass!
 > head = P.take
 >
 > yes :: Monad m => Producer String m r
-> yes = forever $ yield "y"
+> yes = do
+>   yield "y"
+>   yes
+>
+> -- or, more succinctly, yes = forever $ yield "y"
+> -- [I don't feel too strongly about this suggestion, but I think it's still
+> -- worth mentioning. Yes, the reader ought to be familiar with monads, but we
+> -- needn't punish them if they happened to forget that Control.Monad.forever is a
+> -- thing. They might get confused and think that forever is a pipes combinator.]
 >
 > main = runEffect $ yes >-> head 3 >-> P.stdoutLn
 
@@ -864,14 +998,25 @@ You shall not pass!
 > y
 > $
 
-    This lets us write \"Haskell pipes\" instead of Unix pipes.  These are much
-    easier to build than Unix pipes and we can connect them directly within
-    Haskell for interoperability with the Haskell language and ecosystem.
+    This lets us write \"Haskell pipes\" instead of Unix pipes.  Because of the
+    abstractions we provide here, these are much easier to build than an
+    equivalent C program that defines a Unix utility. Furthermore, we can
+    connect them directly within Haskell for interoperability with the Haskell
+    language and ecosystem.
+
+    [I'm not satisfied with the wording here. There's a difference between
+    implementing Unix pipes---that is, implementing the pipes as you would in
+    an operating systems course---and writing a utility that reads in and
+    writes out text from a Unix pipe. How can we best clarify this?]
 -}
 
 {- $listT
-    @pipes@ also provides a \"ListT done right\" implementation.  This differs
-    from the implementation in @transformers@ because this 'ListT':
+    @pipes@ also provides a \"ListT done right\" implementation. (@ListT@ is a
+    monad transformer in the @transformers@ library. @ListT m a@ is basically a
+    newtype wrapper around @m [a]@. Unfortunately, I am not a fan of this
+    transformer, for both correctness and performance reasons.)
+
+    Unlike the implementation of @ListT@ in @transformers@, this 'ListT':
 
     * obeys the monad laws, and
 
@@ -880,7 +1025,13 @@ You shall not pass!
     The latter property is actually an elegant consequence of obeying the monad
     laws.
 
-    To bind a list within a 'ListT' computation, combine 'Select' and 'each':
+    To bind a list within a 'ListT' computation, first convert it to a
+    'Producer' using 'each', and then convert the 'Producer' to a 'ListT' using
+    Select':
+@
+ 'Select' :: 'Producer' a m () -> 'ListT' m a
+@
+
 
 > import Pipes
 > 
@@ -927,14 +1078,7 @@ y = 3
 y = 4
 (1,4)
 
-    You can also go the other way, binding 'Producer's directly within a
-    'ListT'.  In fact, this is actually what 'Select' was already doing:
-
-@
- 'Select' :: 'Producer' a m () -> 'ListT' m a
-@
-
-    This lets you write crazy code like:
+    @Select@ lets you write crazy code like:
 
 > import Pipes
 > import qualified Pipes.Prelude as P
@@ -973,7 +1117,11 @@ quit<Enter>
 
     `ListT` computations can be combined in more ways than `Pipe`s, so try to
     program in `ListT` as much as possible and defer converting it to a `Pipe`
-    as late as possible using `P.loop`.
+    as late as possible using `P.loop`. (Maybe give an example of P.loop here?
+    Also, this seems like a very important point. Maybe we should mention this
+    in the introduction, so that people know the whole time that they're
+    reading this what each thing can be used for. Maybe also explain why "ListT
+    is more useful/flexible than Pipe".)
 
     You can combine `ListT` computations even if their inputs and outputs are
     completely different:
